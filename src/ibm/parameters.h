@@ -16,6 +16,8 @@ struct Parameters {
     double init_belligerence = 0.5;
     double init_bravery = 0.5;
 
+    double omega = 0.5;
+
     // the name of the file to which data is written
     std::string base_name{"sim_ibm_warfare"};
 

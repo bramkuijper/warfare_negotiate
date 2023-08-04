@@ -51,10 +51,12 @@ double IBM_Warfare::Cy(double const yphen)
 // see which patches attack other patches
 double IBM_Warfare::attack_sealed_bid()
 {
+    // clear list of attacked patches
     for (int patch_idx = 0; patch_idx < metapop.size(); ++patch_idx)
     {
         metapop[patch_idx].patches_attack_to.clear();
         metapop[patch_idx].patches_attack_from.clear();
+        metapop[patch_idx].conquered_by = -1;
     }
 
 
@@ -97,20 +99,51 @@ double IBM_Warfare::attack_sealed_bid()
     // for escalation
     for (int patch_idx = 0; patch_idx < metapop.size(); ++patch_idx)
     {
-        n_patches_attacked_from = 
-            metapop[patch_idx].patches_attacked_from.size();
-
-        std::uniform_discrete_distribution patch_contest(0, 
+        std::uniform_discrete_distribution patch_contest_sampler(0, 
                 metapop[patch_idx].patches_attacked_from.size() - 1);
 
+        int contest_idx = patch_contest_sampler(rng_r);
 
+        int contest_patch_idx = metapop[patch_idx].patches_attacked_from[contest_idx];
+
+        // range checking
+        assert(contest_patch_idx >= 0);
+        assert(contest_patch_idx < params.npatches);
+
+        escalated_contest(contest_patch_idx, patch_idx);
     }
 } // double IBM_Warfare::attack_sealed_bid
+
+void IBM_Warfare::escalated_contest(
+        int const attacking_patch_idx
+        ,int const defending_patch_idx)
+{
+    double g_attacker = exp(
+            metapop[attacking_patch_idx].breeders.size() *
+            metapop[attacking_patch_idx].a_brav_phen_group);
+
+    double g_defender = exp(
+            metapop[defending_patch_idx].breeders.size() *
+            metapop[defending_patch_idx].a_brav_phen_group);
+
+    double prob_winning = par.omega * g_attacker /
+        (par.omega * g_attacker + (1.0 - par.omega) * g_defender);
+
+    if (uniform(rng_r) < prob_winning)
+    {
+        metapop[defending_patch_idx].conquered_by = attacking_patch_idx;
+    }
+} // end escalated_contest
+
+
+
+
 
 
 // produce offspring
 void IBM_Warfare::produce_offspring()
 {
+    // reset juveniles
     for (int patch_idx = 0; patch_idx < metapop.size(); ++patch_idx)
     {
         metapop[patch_idx].juveniles.clear();
@@ -172,7 +205,6 @@ void IBM_Warfare::produce_offspring()
     std::array <double> fecundity_origin_list(3,0.0);
 
     int conquered_by_patch_idx;
-        
 
     // generate a sampling distribution of any remote fecundities
     std::discrete_distribution <int> remote_fecundity_sampler(
@@ -184,9 +216,11 @@ void IBM_Warfare::produce_offspring()
             patch_idx < metapop.size(); 
             ++patch_idx)
     {
+        // collect patch id of patch that has conquered focal
+        // if no conquest took place, this is negative
         conquered_by_patch_idx = metapop[patch_idx].conquered_by;
 
-        // make a sampler for either from 
+        // make a sampler for where to pick juveniles from
         // 1. local
         // 2. local, conqueror (if conquered)
         // 3. remote
@@ -198,29 +232,23 @@ void IBM_Warfare::produce_offspring()
             (1.0 - par.d) * (1.0 - par.h) * 
                 metapop[conquered_by_patch_idx].local_fecundity_total
                 :
-                0.0;
+                0.0; // if not conquered by others this is 0
 
         fecundity_origin_list[2] = par.d * global_fecundity_total;
 
         // generate a sampling distribution for sampling the origin of any 
-        // breeder
-        std::discrete_distribution <int> origin_sampler(fecundity_origin_list.begin()
+        //  breeder delivering a juvenile
+        std::discrete_distribution <int> origin_event_sampler(
+                fecundity_origin_list.begin()
                 ,fecundity_origin_list.end());
 
         // aux variables to sample new breeder
         int origin_id, parent_idx, patch_parent_idx;
-            
+           
+        // sampler for the local fecundity distribution
         std::discrete_distribution <int> local_fecundity_sampler(
                     metapop[patch_idx].local_fecundity.begin()
                     ,metapop[patch_idx].local_fecundity.end());
-
-        std::discrete_distribution <int> conqueror_fecundity_sampler();
-
-        // TODO
-        if (conquered_by_patch_idx >= 0)
-        {
-            conqueror_fecundity_sampler
-        }
 
         // clear existing juvs
         metapop[patch_idx].juveniles.clear();
@@ -243,6 +271,17 @@ void IBM_Warfare::produce_offspring()
                     }
                 case 1: // sample from conqueror's patch
                     {
+                        assert(conquered_by_patch_idx >= 0);
+                        assert(conquered_by_patch_idx < params.npatches);
+
+                        // make fecundity distribution of globals
+                        // there is no way to initialize this distribution
+                        // dynamically, so that we have to do this here... meh
+                        std::discrete_distribution <int> conqueror_fecundity_sampler(
+                                metapop[conquered_by_patch_idx].local_fecundity.begin()
+                                metapop[conquered_by_patch_idx].local_fecundity.end()
+                                );
+
                         patch_parent_idx = conquered_by_patch_idx;
                         parent_idx = conqueror_fecundity_sampler(rng_r);
                         break;
@@ -257,10 +296,12 @@ void IBM_Warfare::produce_offspring()
                         break;
                     }
                 case 3:
+                    {
                     // TODO throw a range error
                     std::range_error("Wrong range when sampling origin id.");
                     break;
-            }
+                    }
+            } // end switch
 
             assert(patch_parent_idx >= 0);
             assert(patch_parent_idx < metapop.size());
@@ -277,7 +318,6 @@ void IBM_Warfare::produce_offspring()
             metapop[patch_idx].juveniles.push_back(Kid);
         } // end for breeder idx
     } // end patch_idx
-    
 } // end IBM_Warfare::reproduce()
 
 // TODO: if one has a larger patch make sure replacement also accommodates for this
@@ -307,209 +347,120 @@ void IBM_Warfare::write_parameters()
     data_file << std::endl
         << std::endl;
 
-    // write parameters to the file for each species
-    for (int species_idx = 0; species_idx < 2; ++species_idx)
-    {
-        data_file << "d" << (species_idx + 1) << ";"
-                    << par.initial_d[species_idx] << std::endl
-
-                << "npp" << (species_idx + 1) << ";"
-                    << par.npp[species_idx] << std::endl
-
-                << "baseline_survival" << (species_idx + 1) << ";"
-                    << par.baseline_survival[species_idx] << std::endl
-
-                << "baseline_fecundity" << (species_idx + 1) << ";"
-                    << par.baseline_fecundity[species_idx] << std::endl
-
-                << "strength_survival" << (species_idx + 1) << ";"
-                    << par.strength_survival[species_idx] << std::endl
-
-                << "fecundity_help" << (species_idx +1 ) << ";"
-                    << par.initial_fec_h[species_idx] << std::endl
-
-                << "survival_help" << (species_idx + 1) << ";"
-                    << par.initial_surv_h[species_idx] << std::endl
-
-                << "survival_cost_of_surv_help" << (species_idx + 1) << ";"
-                    << par.survival_cost_of_surv_help[species_idx] << std::endl
-
-                << "survival_cost_of_fec_help" << (species_idx + 1) << ";"
-                    << par.survival_cost_of_fec_help[species_idx] << std::endl
-
-                << "fecundity_cost_of_surv_help" << (species_idx + 1) << ";"
-                    << par.fecundity_cost_of_surv_help[species_idx] << std::endl
-
-                << "fecundity_cost_of_fec_help" << (species_idx + 1) << ";"
-                    << par.fecundity_cost_of_fec_help[species_idx] << std::endl
-
-                << "juvenile_survival_weight" << (species_idx + 1) << ";"
-                    << juvenile_survival_weight[species_idx] << std::endl;
-    }
-
-    data_file << "mu_fec_h;" << par.mu_fec_h << std::endl
-                << "mu_surv_h;" << par.mu_surv_h << std::endl
-                << "mu_d;" << par.mu_disp << std::endl
-                << "sdmu;" << par.sdmu << std::endl
-                << "between_species;" << par.between_species << std::endl
-                << "death_birth;" << par.death_birth << std::endl
-                << "partner_mechanism;" << par.partner_mechanism << std::endl
-                << "fidelity_prob;" << par.fidelity_prob << std::endl
-                << "negotiate_once;" << par.negotiate_once << std::endl
-                << "sd_pcerr;" << par.sd_pcerr << std::endl
-                << "seed;" << seed << std::endl;
-
+    data_file << "d;" << par.d << std::endl <<
+        "omega;" << par.omega << std::endl <<
+        "npp;" << par.npp << std::endl <<
+        "sdmu;" << par.sdmu << std::endl <<
+        "mu_a_bel;" << par.mu_a_bel << std::endl <<
+        "mu_b_bel;" << par.mu_b_bel << std::endl <<
+        "mu_a_brav;" << par.mu_a_brav << std::endl <<
+        "mu_b_brav;" << par.mu_b_brav << std::endl <<
+        "init_belligerence;" << par.init_belligerence << std::endl <<
+        "init_bravery;" << par.init_bravery << std::endl; 
 } // end write_parameters()
 
 void IBM_Warfare::write_data_headers()
 {
-    data_file << "time_step;";
-
-    for (int species_idx = 1; species_idx <= 2; ++species_idx)
-    {
-        data_file
-            << "mean_disp" << species_idx << ";"
-            << "mean_fec_h" << species_idx << ";"
-            << "mean_surv_h" << species_idx << ";"
-            << "mean_given_fec_h" << species_idx << ";"
-            << "mean_given_surv_h" << species_idx << ";"
-
-            << "var_disp" << species_idx << ";"
-            << "var_fec_h" << species_idx << ";"
-            << "var_surv_h" << species_idx << ";"
-            << "var_given_fec_h" << species_idx << ";"
-            << "var_given_surv_h" << species_idx << ";"
-
-            << "mean_surv_prob" << species_idx << ";"
-            << "mean_surv_help_per_ind" << species_idx << ";"
-            << "patch_occupancy" << species_idx << ";"
-            << "nsurvivors" << species_idx << ";"
-            << "mean_offspring" << species_idx << ";"
-            
-            << "mean_adult_survival_weight" << species_idx << ";"
-            << "mean_juvenile_survival_weight" << species_idx << ";";
-    }
-
-    data_file << std::endl;
+    data_file << "time_step;"
+        << "mean_a_bel;" 
+        << "mean_b_bel;"
+        << "mean_belligerence;"
+        << "mean_a_brav;"
+        << "mean_b_brav;"
+        << "mean_bravery;"
+        << "var_a_bel;" 
+        << "var_b_bel;"
+        << "var_belligerence;"
+        << "var_a_brav;"
+        << "var_b_brav;"
+        << "var_bravery;"
+        << std::endl;
 } // end IBM_Warfare::write_data_headers()
 
 // write the data to an output file
 void IBM_Warfare::write_data()
 {
-    // store means and sums of squares
-    // (latter for variance calculations)
-    double mean_disp[2]         = {0.0,0.0};
-    double mean_fec_h[2]        = {0.0,0.0};
-    double mean_surv_h[2]       = {0.0,0.0};
-    double mean_given_fec_h[2]  = {0.0,0.0};
-    double mean_given_surv_h[2] = {0.0,0.0};
+    double mean_a_bel{0.0};
+    double ss_a_bel{0.0};
+    double mean_b_bel{0.0};
+    double ss_b_bel{0.0};
+    double mean_bel{0.0};
+    double ss_bel{0.0};
 
-    double ss_disp[2]           = {0.0,0.0};
-    double ss_fec_h[2]          = {0.0,0.0};
-    double ss_surv_h[2]         = {0.0,0.0};
-    double ss_given_fec_h[2]    = {0.0,0.0};
-    double ss_given_surv_h[2]   = {0.0,0.0};
+    double mean_a_brav{0.0};
+    double ss_a_brav{0.0};
+    double mean_b_brav{0.0};
+    double ss_b_brav{0.0};
+    double mean_brav{0.0};
+    double ss_brav{0.0};
 
-    // aux variables to store trait values
-    double disp,f,s,gf,gs;
+    int a_bel, b_bel, bel, a_brav, b_brav, brav;
 
-    // array for counts of population sizes
-    // (although for now this should be simply metapop.size() * npp[species_idx])
-    int n_events[2] = {0,0};
+    int nbreeder = 0;
 
-    // go through all patches
-    for (int patch_idx = 0; patch_idx < metapop.size(); ++patch_idx)
+    for (int patch_idx = 0; patch_idx < params.npatches; ++patch_idx)
     {
-        // go through the 2 species
-        for (int species_idx = 0; species_idx < 2; ++species_idx)
+        nbreeder += metapop[patch_idx].breeders.size();
+        for (int breeder_idx = 0; 
+                breeder_idx < metapop[patch_idx].breeders.size(); ++breeder_idx)
         {
-            for (ind_iter individual_iter =
-                    metapop[patch_idx].breeders[species_idx].begin();
-                    individual_iter != metapop[patch_idx].breeders[species_idx].end();
-                    ++individual_iter)
-            {
-                // obtain allelic values
-                disp    = (individual_iter->d[0]        + individual_iter->d[1]) / 2;
-                f       = individual_iter->fec_h[0]     + individual_iter->fec_h[1];
-                s       = individual_iter->surv_h[0]    + individual_iter->surv_h[1];
-                gf      = individual_iter->given_fec_h;
-                gs      = individual_iter->given_surv_h;
+            a_bel = metapop[patch_idx].breeders[breeder_idx].a_bel;
+            b_bel = metapop[patch_idx].breeders[breeder_idx].b_bel;
+            bel = metapop[patch_idx].breeders[breeder_idx].bel;
+            a_brav = metapop[patch_idx].breeders[breeder_idx].a_brav;
+            b_brav = metapop[patch_idx].breeders[breeder_idx].b_brav;
+            brav = metapop[patch_idx].breeders[breeder_idx].brav;
 
-                mean_disp[species_idx]          += disp;
-		        ss_disp[species_idx]            += disp * disp;
+            mean_a_bel += a_bel;
+            ss_a_bel += a_bel * a_bel;
+            
+            mean_b_bel += b_bel;
+            ss_b_bel += b_bel * b_bel;
+            
+            mean_bel += bel;
+            ss_bel += bel * bel;
+            
+            mean_a_brav += a_brav;
+            ss_a_brav += a_brav * a_brav;
+            
+            mean_b_brav += b_brav;
+            ss_b_brav += b_brav * b_brav;
+            
+            mean_brav += brav;
+            ss_brav += brav * brav;
+        }
+    }
 
-                mean_fec_h[species_idx]         += f;
-                ss_fec_h[species_idx]           += f * f;
+    mean_a_bel /= nbreeder;
+    double var_a_bel = ss_a_bel / nbreeder - mean_a_bel * mean_a_bel;
+    
+    mean_b_bel /= nbreeder;
+    double var_b_bel = ss_b_bel / nbreeder - mean_b_bel * mean_b_bel;
+    
+    mean_bel /= nbreeder;
+    double var_bel = ss_bel / nbreeder - mean_bel * mean_bel;
+    
+    mean_a_brav /= nbreeder;
+    double var_a_brav = ss_a_brav / nbreeder - mean_a_brav * mean_a_brav;
+    
+    mean_b_brav /= nbreeder;
+    double var_b_brav = ss_b_brav / nbreeder - mean_b_brav * mean_b_brav;
+    
+    mean_brav /= nbreeder;
+    double var_brav = ss_brav / nbreeder - mean_brav * mean_brav;
 
-                mean_surv_h[species_idx]        += s;
-                ss_surv_h[species_idx]          += s * s;
-
-                mean_given_fec_h[species_idx]   += gf;
-                ss_given_fec_h[species_idx]     += gf *gf;
-
-                mean_given_surv_h[species_idx]  += gs;
-                ss_given_surv_h[species_idx]    += gs * gs;
-
-                // update population stats
-                // (although for now, it should be the same as
-                ++n_events[species_idx];
-            }
-        } // end for species_idx
-    } // end for patch_idx
-
-
-    // output the time step for starters
-    data_file << time_step << ";";
-
-    // calculate means variances of traits for each species
-    for (int species_idx = 0; species_idx < 2; ++species_idx)
-    {
-        mean_disp[species_idx]          /= n_events[species_idx];
-        mean_fec_h[species_idx]         /= n_events[species_idx];
-        mean_surv_h[species_idx]        /= n_events[species_idx];
-        mean_given_fec_h[species_idx]   /= n_events[species_idx];
-        mean_given_surv_h[species_idx]  /= n_events[species_idx];
-
-        // var = E[x^2] - E[x]^2
-        double var_disp = ss_disp[species_idx] / n_events[species_idx] -
-	        mean_disp[species_idx] * mean_disp[species_idx];
-
-        double var_fec_h = ss_fec_h[species_idx] / n_events[species_idx] -
-            mean_fec_h[species_idx] * mean_fec_h[species_idx];
-
-        double var_surv_h = ss_surv_h[species_idx] / n_events[species_idx] -
-            mean_surv_h[species_idx] * mean_surv_h[species_idx];
-
-        double var_given_fec_h = ss_given_fec_h[species_idx] / n_events[species_idx] -
-            mean_given_fec_h[species_idx] * mean_given_fec_h[species_idx];
-
-        double var_given_surv_h = ss_given_surv_h[species_idx] / n_events[species_idx] -
-            mean_given_surv_h[species_idx] * mean_given_surv_h[species_idx];
-
-        data_file
-                    << mean_disp[species_idx] << ";"
-                    << mean_fec_h[species_idx] << ";"
-                    << mean_surv_h[species_idx] << ";"
-                    << mean_given_fec_h[species_idx] << ";"
-                    << mean_given_surv_h[species_idx] << ";"
-
-                    << var_disp << ";"
-                    << var_fec_h << ";"
-                    << var_surv_h << ";"
-                    << var_given_fec_h << ";"
-                    << var_given_surv_h << ";"
-
-                    << mean_surv_prob[species_idx] << ";"
-                    // TODO: missing mean_fec_help_per_individual?
-                    << mean_surv_help_per_individual[species_idx] << ";"
-                    << patch_occupancy[species_idx] << ";"
-                    << nsurvivors[species_idx] << ";"
-                    << mean_offspring[species_idx] << ";"
-
-                    << mean_adult_survival_weight[species_idx] << ";"
-                    << mean_juvenile_survival_weight[species_idx] << ";";
-    } // end for species_idx
-
-    data_file << std::endl;
-
+    data_file << time_step << ";"
+        << mean_a_bel << ";"
+        << mean_b_bel << ";"
+        << mean_bel << ";"
+        << mean_a_brav << ";"
+        << mean_b_brav << ";"
+        << mean_brav << ";"
+        << var_a_bel << ";"
+        << var_b_bel << ";"
+        << var_bel << ";"
+        << var_a_brav << ";"
+        << var_b_brav << ";"
+        << var_brav << ";"
+        << std::endl;
 } // end IBM_Warfare::write_data()
