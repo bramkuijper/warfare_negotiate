@@ -30,6 +30,10 @@ class IBM_Warfare
         // same sequence of random numbers for debugging purposes etc
         unsigned int seed;
 
+        // variable for stats purposes: 
+        // total fecundity in population
+        double global_fecundity_total;
+
         // random number generator
         std::mt19937 rng_r;
 
@@ -43,6 +47,9 @@ class IBM_Warfare
         // containing all the parameters for this run
         Parameters par;
 
+        // save number of fights
+        int n_escalated_fights = 0;
+
     public:
         // metapopulation of patches
         std::vector<Patch> metapop;
@@ -51,8 +58,16 @@ class IBM_Warfare
         IBM_Warfare(const Parameters &params);
 
         void reproduce();
-        void survive_otherwise_replace();
-        void compete_to_survive();
+        double Cy(double const yphen);
+        double Cx(double const xphen);
+        void attack();
+        void attack_sealed_bid();
+
+        void escalated_contest(int const attacking_patch_idx
+                ,int const defending_patch_idx);
+
+        void produce_offspring();
+        void replace_breeders_by_juvs();
 
         void write_parameters();
         void write_data();

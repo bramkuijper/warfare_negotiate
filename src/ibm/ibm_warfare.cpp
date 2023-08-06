@@ -48,8 +48,16 @@ double IBM_Warfare::Cy(double const yphen)
     return(std::pow(yphen,4.0));
 }
 
+void IBM_Warfare::attack()
+{
+    if (par.attack == sealed_bid)
+    {
+        attack_sealed_bid();
+    }
+}
+
 // see which patches attack other patches
-double IBM_Warfare::attack_sealed_bid()
+void IBM_Warfare::attack_sealed_bid()
 {
     // clear list of attacked patches
     for (int patch_idx = 0; patch_idx < metapop.size(); ++patch_idx)
@@ -95,24 +103,34 @@ double IBM_Warfare::attack_sealed_bid()
         }
     } // end int patch_idx
 
+    // reset the counter of the number of escalated fights
+    n_escalated_fights = 0;
+
     // now that all attacks have been noted let's pick one per patch 
     // for escalation
     for (int patch_idx = 0; patch_idx < metapop.size(); ++patch_idx)
     {
-        std::uniform_discrete_distribution patch_contest_sampler(0, 
-                metapop[patch_idx].patches_attacked_from.size() - 1);
+        if (metapop[patch_idx].patches_attack_from.size() == 0)
+        {
+            continue;
+        }
+
+        std::uniform_int_distribution <int> patch_contest_sampler(0, 
+                metapop[patch_idx].patches_attack_from.size() - 1);
 
         int contest_idx = patch_contest_sampler(rng_r);
 
-        int contest_patch_idx = metapop[patch_idx].patches_attacked_from[contest_idx];
+        int contest_patch_idx = metapop[patch_idx].patches_attack_from[contest_idx];
 
         // range checking
         assert(contest_patch_idx >= 0);
-        assert(contest_patch_idx < params.npatches);
+        assert(contest_patch_idx < par.npatches);
 
         escalated_contest(contest_patch_idx, patch_idx);
-    }
-} // double IBM_Warfare::attack_sealed_bid
+
+        ++n_escalated_fights;
+    } // end for patch_idx
+} // void IBM_Warfare::attack_sealed_bid
 
 void IBM_Warfare::escalated_contest(
         int const attacking_patch_idx
@@ -137,9 +155,6 @@ void IBM_Warfare::escalated_contest(
 
 
 
-
-
-
 // produce offspring
 void IBM_Warfare::produce_offspring()
 {
@@ -153,9 +168,10 @@ void IBM_Warfare::produce_offspring()
     double bel_phen, brav_phen, fecundity;
 
     std::vector <double> global_fecundity{0};
-    std::vector <int> global_patch_id{0};
-    std::vector <int> global_individual_id{0};
-    double global_fecundity_total = 0.0;
+    std::vector <int> global_patch_idx{0};
+    std::vector <int> global_individual_idx{0};
+    
+    global_fecundity_total = 0.0;
 
     // now produce offspring dependent on an individual's level of x, y
     for (int patch_idx = 0; patch_idx < metapop.size(); ++patch_idx)
@@ -199,12 +215,11 @@ void IBM_Warfare::produce_offspring()
     std::discrete_distribution <int> global_fecundity_sampler(
             global_fecundity.begin(), global_fecundity.end());
 
-    double local_feq_conqueree;
-    double local_feq_conqueror;
+    std::array <double, 3> fecundity_origin_list{0.0,0.0,0.0};
 
-    std::array <double> fecundity_origin_list(3,0.0);
-
+    // auxiliary variables to deal with patches that are conquered
     int conquered_by_patch_idx;
+    double share_focal, share_conqueror;
 
     // generate a sampling distribution of any remote fecundities
     std::discrete_distribution <int> remote_fecundity_sampler(
@@ -216,25 +231,38 @@ void IBM_Warfare::produce_offspring()
             patch_idx < metapop.size(); 
             ++patch_idx)
     {
+        // by default we assume that focal 
+        // has full fecundity share
+        share_focal = 1.0;
+        share_conqueror = 0.0;
+
         // collect patch id of patch that has conquered focal
         // if no conquest took place, this is negative
         conquered_by_patch_idx = metapop[patch_idx].conquered_by;
+        
+        if (conquered_by_patch_idx >= 0)
+        {
+            assert(conquered_by_patch_idx < par.npatches);
+
+            share_focal = par.h;
+            share_conqueror = 1.0 - par.h;
+        }
 
         // make a sampler for where to pick juveniles from
         // 1. local
         // 2. local, conqueror (if conquered)
-        // 3. remote
+        // 3. from any of the random patches 
         //
         fecundity_origin_list[0] = 
-            (1.0 - par.d) * par.h * metapop[patch_idx].local_fecundity;
+            (1.0 - par.d) * share_focal * metapop[patch_idx].local_fecundity_total;
 
         fecundity_origin_list[1] = conquered_by_patch_idx >= 0 ?
-            (1.0 - par.d) * (1.0 - par.h) * 
+            (1.0 - par.d) * share_conqueror * 
                 metapop[conquered_by_patch_idx].local_fecundity_total
                 :
                 0.0; // if not conquered by others this is 0
 
-        fecundity_origin_list[2] = par.d * global_fecundity_total;
+        fecundity_origin_list[2] = par.d * global_fecundity_total / par.npatches;
 
         // generate a sampling distribution for sampling the origin of any 
         //  breeder delivering a juvenile
@@ -255,11 +283,11 @@ void IBM_Warfare::produce_offspring()
 
         // sample new individuals to take up breeder positions
         for (int breeder_idx = 0; 
-                breeder_idx < params.npp; 
+                breeder_idx < par.npp; 
                 ++breeder_idx)
         {
             // sample origin id (0,1,2)
-            origin_id = origin_sampler(rng_r);
+            origin_id = origin_event_sampler(rng_r);
 
             switch(origin_id)
             {
@@ -272,14 +300,14 @@ void IBM_Warfare::produce_offspring()
                 case 1: // sample from conqueror's patch
                     {
                         assert(conquered_by_patch_idx >= 0);
-                        assert(conquered_by_patch_idx < params.npatches);
+                        assert(conquered_by_patch_idx < par.npatches);
 
                         // make fecundity distribution of globals
                         // there is no way to initialize this distribution
                         // dynamically, so that we have to do this here... meh
                         std::discrete_distribution <int> conqueror_fecundity_sampler(
                                 metapop[conquered_by_patch_idx].local_fecundity.begin()
-                                metapop[conquered_by_patch_idx].local_fecundity.end()
+                                ,metapop[conquered_by_patch_idx].local_fecundity.end()
                                 );
 
                         patch_parent_idx = conquered_by_patch_idx;
@@ -317,28 +345,45 @@ void IBM_Warfare::produce_offspring()
 
             metapop[patch_idx].juveniles.push_back(Kid);
         } // end for breeder idx
-    } // end patch_idx
-} // end IBM_Warfare::reproduce()
+    
+        assert(metapop[patch_idx].juveniles.size() == par.npp);
 
-// TODO: if one has a larger patch make sure replacement also accommodates for this
+    } // end patch_idx
+} // end IBM_Warfare::produce_offspring()
+
 void IBM_Warfare::replace_breeders_by_juvs()
 {
+    double a_brav_phen_group, a_bel_phen_group;
+
     // now produce offspring dependent on an individual's level of x, y
     for (int patch_idx = 0; 
             patch_idx < metapop.size(); 
             ++patch_idx)
     {
+        // reset group-level values of belligerence and bravery
+        a_brav_phen_group = 0.0;
+        a_bel_phen_group = 0.0;
+
         assert(metapop[patch_idx].juveniles.size() == par.npp);
 
         for (int breeder_idx = 0; 
-                breeder_idx < params.npp; 
+                breeder_idx < par.npp; 
                 ++breeder_idx)
         {
             metapop[patch_idx].breeders[breeder_idx] = 
                 metapop[patch_idx].juveniles[breeder_idx];
+
+            a_bel_phen_group += metapop[patch_idx].breeders[breeder_idx].a_bel;
+            a_brav_phen_group += metapop[patch_idx].breeders[breeder_idx].a_brav;
         }
+
+        a_bel_phen_group /= par.npp;
+        a_brav_phen_group /= par.npp;
+
+        metapop[patch_idx].a_bel_phen_group = a_bel_phen_group;
+        metapop[patch_idx].a_brav_phen_group = a_brav_phen_group;
     } // end patch idx
-}
+} // end replace_breeders_by_juvs()
 
 
 //  write parameters to the output file
@@ -374,6 +419,8 @@ void IBM_Warfare::write_data_headers()
         << "var_a_brav;"
         << "var_b_brav;"
         << "var_bravery;"
+        << "n_escalated_contests;"
+        << "global_fecundity_total;"
         << std::endl;
 } // end IBM_Warfare::write_data_headers()
 
@@ -394,11 +441,14 @@ void IBM_Warfare::write_data()
     double mean_brav{0.0};
     double ss_brav{0.0};
 
-    int a_bel, b_bel, bel, a_brav, b_brav, brav;
+    double a_bel, b_bel, bel, a_brav, b_brav, brav;
 
     int nbreeder = 0;
 
-    for (int patch_idx = 0; patch_idx < params.npatches; ++patch_idx)
+    int n_attack_to = 0;
+    int n_attack_from = 0;
+
+    for (int patch_idx = 0; patch_idx < par.npatches; ++patch_idx)
     {
         nbreeder += metapop[patch_idx].breeders.size();
         for (int breeder_idx = 0; 
@@ -406,10 +456,10 @@ void IBM_Warfare::write_data()
         {
             a_bel = metapop[patch_idx].breeders[breeder_idx].a_bel;
             b_bel = metapop[patch_idx].breeders[breeder_idx].b_bel;
-            bel = metapop[patch_idx].breeders[breeder_idx].bel;
+            bel = metapop[patch_idx].breeders[breeder_idx].bel_phen;
             a_brav = metapop[patch_idx].breeders[breeder_idx].a_brav;
             b_brav = metapop[patch_idx].breeders[breeder_idx].b_brav;
-            brav = metapop[patch_idx].breeders[breeder_idx].brav;
+            brav = metapop[patch_idx].breeders[breeder_idx].brav_phen;
 
             mean_a_bel += a_bel;
             ss_a_bel += a_bel * a_bel;
@@ -462,5 +512,7 @@ void IBM_Warfare::write_data()
         << var_a_brav << ";"
         << var_b_brav << ";"
         << var_brav << ";"
+        << n_escalated_fights << ";"
+        << global_fecundity_total << ";"
         << std::endl;
 } // end IBM_Warfare::write_data()

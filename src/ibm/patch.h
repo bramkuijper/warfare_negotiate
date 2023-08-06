@@ -12,8 +12,16 @@ class Patch
         std::vector < Individual > breeders;
         std::vector < Individual > juveniles;
 
+        std::vector < int > patches_attack_to;
+        std::vector < int > patches_attack_from;
+
         std::vector <double> local_fecundity;
-        double local_fecundity_total = 0.0;
+        double local_fecundity_total{0.0};
+
+        double a_brav_phen_group{0.0};
+        double a_bel_phen_group{0.0};
+
+        int conquered_by{0};
 
         // the default constructor 
         Patch(int const n, Parameters const &params);

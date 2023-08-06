@@ -2,7 +2,15 @@
 #define _PARAMETERS_H_
 
 #include <string>
+
+enum attack_type {
+    sealed_bid = 0,
+    negotiated = 1
+};
+
 struct Parameters {
+
+    attack_type attack{sealed_bid};
 
     double d = {0.3}; // dispersal rates of species 1 and 2
     int max_time_steps{50000}; // number of generations the simulation is supposed to last
@@ -10,13 +18,18 @@ struct Parameters {
 
     // number of individuals per patch
     // of each species
-    int npp = 5;
+    int npp = 10;
 
     // initial value of belligerence and bravery
     double init_belligerence = 0.5;
     double init_bravery = 0.5;
 
     double omega = 0.5;
+
+    // share of fecundity that is 
+    // left to the group that has been conquered by the focal
+    // group. The focal group gets share 1.0 - h
+    double h = 0.5;
 
     // the name of the file to which data is written
     std::string base_name{"sim_ibm_warfare"};
