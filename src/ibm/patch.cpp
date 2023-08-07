@@ -20,7 +20,6 @@ Patch::Patch(
     ,patches_attack_to{0}
     ,patches_attack_from{0}
 {
-    std::cout << breeders[0].a_bel << std::endl;
 } // end constructor
 
 // copy constructor
